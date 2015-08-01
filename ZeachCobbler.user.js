@@ -1,4 +1,4 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Zeach Cobbler
 // @namespace    https://github.com/RealDebugMonkey/ZeachCobbler
 // @updateURL    http://bit.do/ZeachCobblerJS2
@@ -189,6 +189,8 @@ jQuery("#connecting").after('<canvas id="canvas" width="800" height="600"></canv
             'nextOnBlobLock'    : false,
             'rightClickFires'   : false,
             'showZcStats'       : true,
+            'useDataServer'     : false,
+            'dataServerAddress' : ''
         };
         simpleSavedSettings(optionsAndDefaults);
     }
@@ -1147,10 +1149,18 @@ jQuery("#connecting").after('<canvas id="canvas" width="800" height="600"></canv
     function drawMiniMap() {
         rescaleMinimap();
         var minimapScale = cobbler.miniMapScaleValue;
+        var friendPoints = [];
+        _.forEach(dataServer.game.sessions, function(session) {
+            session.cells.forEach(function(cell) {
+                friendPoints.push(cell);
+            });
+        });
         miniMapCtx.clearRect(0, 0, ~~(zeach.mapWidth/minimapScale), ~~(zeach.mapHeight/minimapScale));
 
-        _.forEach(_.values(getOtherBlobs()), function(blob){
+        _.forEach(augmentBlobArray(_.values(getOtherBlobs())), function(blob){
             miniMapCtx.strokeStyle = blob.isVirus ?  "#33FF33" : 'rgb(52,152,219)' ;
+            if (_.includes(friendPoints, blob.id))
+                miniMapCtx.strokeStyle = "#FFFFFF";
             miniMapCtx.beginPath();
             miniMapCtx.arc((blob.nx+Math.abs(zeach.mapLeft)) / minimapScale, (blob.ny+Math.abs(zeach.mapTop)) / minimapScale, blob.size / minimapScale, 0, 2 * Math.PI);
             miniMapCtx.stroke();
@@ -1701,12 +1711,18 @@ jQuery("#connecting").after('<canvas id="canvas" width="800" height="600"></canv
         if(null == timeSpawned && isPlayerAlive()) {
             timeSpawned = Date.now(); // it's been reported we miss some instances of player spawning
         }
+        dataServer.onConnect();
+        dataServer.updateBlobs();
     }
 
     function onBeforeNewPointPacket() {
         if (0 == _.size(zeach.myPoints)){
             timeSpawned = Date.now();
         }
+    }
+
+    function onAfterNewPointPacket() {
+            dataServer.updateSelf();
     }
 
     function setCellName(cell, d) {
@@ -1784,6 +1800,90 @@ jQuery("#connecting").after('<canvas id="canvas" width="800" height="600"></canv
         }
     }
 
+    // ======================   Data Server functions   ==================================================
+
+    var dataServer = {
+        primus: null,
+        sessionId: null,
+        serverAddress: null,
+        playerName: null,
+        blobs: {},
+        game: {},
+
+        init: function () {
+            if (!cobbler.useDataServer)
+                return;
+            var instance = this;
+            f.getScript(cobbler.dataServerAddress + "/primus/primus.js", function() {
+                instance.primus = Primus.connect(cobbler.dataServerAddress);
+                instance.primus.write({type: 'register'});
+                instance.primus.on('data', function message(data) {
+                    switch (data.type) {
+                        case 'register':
+                            instance.sessionId = data.id;
+                            break;
+                        case 'update':
+                            switch (data.updateType) {
+                                case 'blobs':
+                                    if (data.updateSource != this.sessionId)
+                                    {
+                                        instance.blobs = augmentBlobArray(_.values(_.merge(data.updateData, zeach.allNodes)));
+                                    }
+                                    break;
+                                case 'game':
+                                    instance.game = data.updateData;
+                                    break;
+                            }
+                            break;
+                    }
+                });
+                instance.primus.on('error', function error(err) {
+                    console.log(err);
+                });
+            });
+        },
+
+        onConnect: function() {
+            if (!this.primus)
+                return;
+            if (!this.serverAddress || this.serverAddress !== serverIP) {
+                this.serverAddress = serverIP;
+                this.primus.write({type: 'join', serverAddress: 'test', name: 'test', cells: zeach.myIDs});
+            }
+        },
+
+        updateSelf: function() {
+            if (this.primus)
+                this.primus.write({type: 'update', updateType: 'self', updateData: {name: 'test', cells: zeach.myIDs}});
+        },
+
+        updateBlobs: function() {
+            if (this.primus && this.serverAddress)
+                this.primus.write({type: 'update', updateType: 'blobs', updateData: _.mapValues(zeach.allNodes, this.reduceItem)});
+        },
+
+        reduceItem: function(item) {
+            return {
+                nx: item.nx,
+                ny: item.ny,
+                dx: item.dx,
+                dy: item.dy,
+                lastTimestamp: item.lastTimestamp,
+                id: item.id,
+                nSize: item.nSize,
+                ox: item.ox,
+                oy: item.oy,
+                oSize: item.oSize,
+                nameCache: item.nameCache,
+                size: item.size,
+                isVirus: item.isVirus,
+                isAgitated: item.isAgitated
+            }
+        }
+    };
+
+    if (cobbler.useDataServer)
+        dataServer.init();
 
 // ======================   Start main    ==================================================================
 
@@ -2216,6 +2316,7 @@ jQuery("#connecting").after('<canvas id="canvas" width="800" height="600"></canv
                 /*new*/onBeforeNewPointPacket();
                 K.push(a.getUint32(b, true));
                 b += 4;
+                /*new*/onAfterNewPointPacket();
                 break;
             case 49:
                 if (null != z) {
@@ -4882,6 +4983,28 @@ col3.append('<h4>Skins Support</h4>');
 AppendCheckboxP(col3, 'amConnect-checkbox', ' AgarioMods Connect *skins', window.cobbler.amConnectSkins, function(val){window.cobbler.amConnectSkins = val;});
 AppendCheckboxP(col3, 'amExtended-checkbox', ' AgarioMods Extended skins', window.cobbler.amExtendedSkins, function(val){window.cobbler.amExtendedSkins = val;});
 AppendCheckboxP(col3, 'imgur-checkbox', ' Imgur.com  i/skins', window.cobbler.imgurSkins, function(val){window.cobbler.imgurSkins = val;});
+
+col3.append('<h4>Data Server</h4>');
+col3.append('<div id="dataserver-group" class="input-group input-group-sm"><span class="input-group-addon"><input id="dataserver-checkbox" type="checkbox"></span>' +
+            '<input id="dataserver-textbox" type="text" class="form-control" value="'+ cobbler.dataServerAddress +'"></div>');
+col3.append('<h6>Uses a server to enable sharing data <span style="color: red">[Requires script reload]</span></h6>');
+$('#dataserver-checkbox').change(function(){
+    if (!!this.checked){
+        $('#dataserver-textbox').removeAttr("disabled");
+    } else {
+        $('#dataserver-textbox').attr({disabled:"disabled"});
+    }
+    cobbler.useDataServer = !!this.checked;
+});
+if (cobbler.useDataServer){$('#dataserver-checkbox').prop('checked', true);}else{$('#dataserver-textbox').attr({disabled:"disabled"})}
+$('#dataserver-textbox').on('input propertychange paste', function() {
+    if (this.value.length === 0)
+        $("#dataserver-group").addClass('has-error');
+    else {
+        $("#dataserver-group").removeClass('has-error');
+        cobbler.dataServerAddress = this.value;
+    }
+});
 
 // ---- Tooltips
 $("#rainbow-checkbox").attr({"data-toggle": "tooltip", "data-placement": "right",

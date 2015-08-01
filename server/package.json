@@ -1,0 +1,18 @@
+{
+  "name": "ZeachCobblerDataServer",
+  "version": "0.0.1",
+  "description": "Data server for ZeachCobbler",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "palp",
+  "license": "ISC",
+  "dependencies": {
+    "async": "^1.4.0",
+    "collections": "^1.2.3",
+    "primus": "^3.2.1",
+    "ws": "^0.7.2"
+  }
+}
